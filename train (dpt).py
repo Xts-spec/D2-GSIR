@@ -1,5 +1,4 @@
 import os
-import math
 import sys
 import uuid
 from argparse import ArgumentParser, Namespace
@@ -10,7 +9,6 @@ import kornia
 import numpy as np
 import nvdiffrast.torch as dr
 import torch
-import torch.nn as nn
 import torch.nn.functional as F
 import torchvision.transforms as T
 from tqdm import tqdm, trange
@@ -22,7 +20,8 @@ from pbr import CubemapLight, get_brdf_lut, pbr_shading
 from scene import GaussianModel, Scene, Camera
 from utils.general_utils import safe_state
 from utils.image_utils import psnr, turbo_cmap
-from utils.loss_utils import l1_loss, ssim
+from utils.loss_utils import l1_loss, ssim, pearson_depth_loss
+from utils.DNloss_utils import loss_depth_smoothness, patch_norm_mse_loss, patch_norm_mse_loss_global
 
 try:
     from torch.utils.tensorboard import SummaryWriter
@@ -140,6 +139,7 @@ def training(
     indirect: bool = False,
 ) -> None:
     first_iter = 0
+    patch_range = (5, 17) # LLFF新增
     gaussians = GaussianModel(dataset.sh_degree)
     scene = Scene(dataset, gaussians)
     gaussians.training_setup(opt)
@@ -168,7 +168,6 @@ def training(
         {"name": "cubemap", "params": cubemap.parameters(), "lr": opt.opacity_lr},
     ]
     light_optimizer = torch.optim.Adam(param_groups, lr=opt.opacity_lr)
-
 
     canonical_rays = scene.get_canonical_rays()
 
@@ -231,7 +230,7 @@ def training(
             bg_color=background,
             derive_normal=True,
         )
-        image = rendering_result["render"]  # [3, H, W] 渲染图像
+        image = rendering_result["render"]  # [3, H, W]
         viewspace_point_tensor = rendering_result["viewspace_points"]
         visibility_filter = rendering_result["visibility_filter"]
         radii = rendering_result["radii"]
@@ -258,25 +257,39 @@ def training(
         gt_image = viewpoint_cam.original_image.cuda()
         alpha_mask = viewpoint_cam.gt_alpha_mask.cuda()
         gt_image = (gt_image * alpha_mask + background[:, None, None] * (1.0 - alpha_mask)).clamp(0.0, 1.0)
-        
-        # 使用渲染图像计算损失
-        image_for_loss = image
-            
         loss: torch.Tensor
-        Ll1 = F.l1_loss(image_for_loss, gt_image)
+        Ll1 = F.l1_loss(image, gt_image)
         normal_loss = 0.0
+        loss_hard = 0
         if iteration <= pbr_iteration:
-            loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim(image_for_loss, gt_image))
+            loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim(image, gt_image))
+
+            # Depth loss新增
+            loss_hard = 0
+            depth_mono = 255.0 - viewpoint_cam.depth_mono
+
+            loss_l2_dpt = patch_norm_mse_loss(depth_map[None,...], depth_mono[None,...], randint(patch_range[0], patch_range[1]), opt.error_tolerance)
+            loss_hard += 0.1 * loss_l2_dpt
+
+            
+            if iteration > 7000:
+                loss_hard += 0.5 * loss_depth_smoothness(depth_map[None, ...], depth_mono[None, ...])
+
+            loss_global = patch_norm_mse_loss_global(depth_map[None,...], depth_mono[None,...], randint(patch_range[0], patch_range[1]), opt.error_tolerance)
+            loss_hard += 1 * loss_global
+            loss+=loss_hard
+
+            # pearson_loss = pearson_depth_loss(depth_map.squeeze(0), viewpoint_cam.depth_mono)
+            # loss += pearson_loss
+
             # normal loss
             normal_loss_weight = 1.0
             mask = rendering_result["normal_from_depth_mask"]  # [1, H, W]
+
             normal_loss = F.l1_loss(normal_map[:, mask], normal_map_from_depth[:, mask])
             loss += normal_loss_weight * normal_loss
             normal_tv_loss = get_tv_loss(gt_image, normal_map, pad=1, step=1)
             loss += normal_tv_loss * normal_tv_weight
-            
-            
-            # 多视图一致性（已关闭）
 
         else:  # NOTE: PBR
             if occlusion_flag and indirect:#遮挡体素与间接光照加载
@@ -301,7 +314,7 @@ def training(
                     W=W,
                     bound=bound,
                     points=points,
-                    normals=normal_map.permute(1, 2, 0).detach().reshape(-1, 3).contiguous(),
+                    normals=normal_map.permute(1, 2, 0).reshape(-1, 3).contiguous(),
                     occlusion_coefficients=occlusion_coefficients,
                     occlusion_ids=occlusion_ids,
                     aabb=aabb,
@@ -309,7 +322,7 @@ def training(
                 ).reshape(H, W, 1)
                 irradiance = irradiance_volumes.query_irradiance(
                     points=points.reshape(-1, 3).contiguous(),
-                    normals=normal_map.permute(1, 2, 0).detach().reshape(-1, 3).contiguous(),
+                    normals=normal_map.permute(1, 2, 0).reshape(-1, 3).contiguous(),
                 ).reshape(H, W, -1)
             else:
                 occlusion = torch.ones_like(roughness_map).permute(1, 2, 0)  # [H, W, 1]
@@ -337,8 +350,6 @@ def training(
                 render_rgb,
                 background[:, None, None],
             )
-            
-            # PBR阶段使用渲染结果计算损失
             pbr_render_loss = l1_loss(render_rgb, gt_image)
             loss = pbr_render_loss
 
@@ -424,22 +435,14 @@ def training(
                 )
                 gaussians.add_densification_stats(viewspace_point_tensor, visibility_filter)
 
-                # === [EDIT: Dynamic densification frequency] 动态分裂频率：5000轮前每50次，之后每100次 ===
-                # 5000轮前提高分裂频率，之后恢复正常频率
-                densification_interval = 50 if iteration <= 5000 else opt.densification_interval
-                
                 if (
                     iteration > opt.densify_from_iter
-                    and iteration % densification_interval == 0
+                    and iteration % opt.densification_interval == 0
                 ):
-                    # === [EDIT: Set current_iter for adaptive threshold] 为自适应阈值设置当前迭代 ===
-                    gaussians.current_iter = iteration
-                    # === [END EDIT] ===
                     size_threshold = 20 if iteration > opt.opacity_reset_interval else None
                     gaussians.densify_and_prune(
                         opt.densify_grad_threshold, 0.005, scene.cameras_extent, size_threshold
                     )
-                # === [END EDIT] ===
 
                 if iteration % opt.opacity_reset_interval == 0 or (
                     dataset.white_background and iteration == opt.densify_from_iter
@@ -513,7 +516,6 @@ def training_report(
     occlusion_volumes: Dict,
     irradiance_volumes: IrradianceVolumes,
     indirect: bool = False,
-    opt=None,
 ) -> None:
     if tb_writer:
         tb_writer.add_scalar("train_loss_patches/l1_loss", Ll1, iteration)
@@ -678,17 +680,10 @@ def training_report(
                         render_rgb = zero_pad
                         pbr_image = torch.cat([zero_pad, zero_pad, zero_pad], dim=2)  # [3, H, 3W]
 
-                    # 评估/可视化使用渲染图像
-                    eval_image_for_metric = image
-                    eval_render_rgb_for_metric = render_rgb if iteration > pbr_iteration else None
-                    if iteration > pbr_iteration and eval_render_rgb_for_metric is not None:
-                        # PBR阶段直接使用渲染结果
-                        pass
-
                     if tb_writer and (idx < 5):
                         tb_writer.add_images(
                             f"{config['name']}_view_{viewpoint.image_name}_{idx}/render",
-                            resize_tensorboard_img(eval_image_for_metric)[None],
+                            resize_tensorboard_img(image)[None],
                             global_step=iteration,
                         )
                         tb_writer.add_images(
@@ -719,14 +714,13 @@ def training_report(
                                 global_step=iteration,
                             )
                     if iteration > pbr_iteration:
-                        img_for_metric = eval_render_rgb_for_metric if eval_render_rgb_for_metric is not None else render_rgb
-                        l1_test += F.l1_loss(img_for_metric, gt_image).mean().double()
-                        psnr_test += psnr(img_for_metric, gt_image).mean().double()
-                        ssim_test += ssim(img_for_metric, gt_image).mean().double()
+                        l1_test += F.l1_loss(render_rgb, gt_image).mean().double()
+                        psnr_test += psnr(render_rgb, gt_image).mean().double()
+                        ssim_test += ssim(render_rgb, gt_image).mean().double()
                     else:
-                        l1_test += F.l1_loss(eval_image_for_metric, gt_image).mean().double()
-                        psnr_test += psnr(eval_image_for_metric, gt_image).mean().double()
-                        ssim_test += ssim(eval_image_for_metric, gt_image).mean().double()
+                        l1_test += F.l1_loss(image, gt_image).mean().double()
+                        psnr_test += psnr(image, gt_image).mean().double()
+                        ssim_test += ssim(image, gt_image).mean().double()
                 psnr_test /= len(config["cameras"])
                 ssim_test /= len(config["cameras"])
                 l1_test /= len(config["cameras"])

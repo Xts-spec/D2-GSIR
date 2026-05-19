@@ -54,8 +54,8 @@ class SceneInfo(NamedTuple):
     ply_path: str
 
 
-def getNerfppNorm(cam_info: List[CameraInfo]) -> Dict:
-    def get_center_and_diag(cam_centers: List[np.ndarray]) -> Tuple[np.ndarray, np.ndarray]:
+def getNerfppNorm(cam_info: List[CameraInfo]) -> Dict:#这段代码的作用是计算场景的规范化参数（类似于 NeRF++ 中的场景归一化处理），主要用于将 3D 场景的坐标系统归一化到一个合适的范围，以帮助模型（如 3D 高斯渲染模型）更稳定地训练。
+    def get_center_and_diag(cam_centers: List[np.ndarray]) -> Tuple[np.ndarray, np.ndarray]:#计算所有相机中心的平均位置（场景中心）和最大距离（对角线长度）：
         cam_centers = np.hstack(cam_centers)
         avg_cam_center = np.mean(cam_centers, axis=1, keepdims=True)
         center = avg_cam_center
@@ -70,10 +70,10 @@ def getNerfppNorm(cam_info: List[CameraInfo]) -> Dict:
         C2W = np.linalg.inv(W2C)
         cam_centers.append(C2W[:3, 3:4])
 
-    center, diagonal = get_center_and_diag(cam_centers)
-    radius = diagonal * 1.1
+    center, diagonal = get_center_and_diag(cam_centers)#得到所有相机的平均中心和最大距离。
+    radius = diagonal * 1.1#场景半径设为最大距离的 1.1 倍（留有余量，确保所有相机都被包含）。
 
-    translate = -center
+    translate = -center#平移向量为平均中心的负值（用于将场景中心平移到原点）。
 
     return {"translate": translate, "radius": radius}
 
@@ -297,7 +297,7 @@ def readNerfSyntheticInfo(
     nerf_normalization = getNerfppNorm(train_cam_infos)
 
     ply_path = os.path.join(path, "points3d.ply")
-    if not os.path.exists(ply_path):
+    if not os.path.exists(ply_path):#没有 Colmap 点云数据的数据集（如 Blender 合成数据集）生成初始随机点云，并尝试读取该点云数据供后续 3D 高斯模型初始化使用。
         # Since this data set has no colmap data, we start with random points
         num_pts = 100_000
         print(f"Generating random point cloud ({num_pts})...")

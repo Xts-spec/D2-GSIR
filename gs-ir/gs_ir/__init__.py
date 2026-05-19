@@ -4,7 +4,7 @@ from . import _C
 from .volumes import IrradianceVolumes
 
 @torch.no_grad()
-def recon_occlusion(
+def recon_occlusion(#重建场景遮挡信息的核心函数，其作用是计算每个 3D 点的遮挡程度（即该点被其他物体遮挡的概率），为后续 PBR 渲染提供阴影信息
     H: int,
     W: int,
     bound: float,

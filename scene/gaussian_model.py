@@ -33,8 +33,8 @@ from utils.system_utils import mkdir_p
 
 
 class GaussianModel:
-    def setup_functions(self) -> None:
-        def build_covariance_from_scaling_rotation(
+    def setup_functions(self) -> None:#定义高斯参数的激活函数和协方差矩阵构建逻辑。
+        def build_covariance_from_scaling_rotation(#协方差矩阵构建：build_covariance_from_scaling_rotation通过缩放因子（带修正系数）和旋转矩阵计算高斯的协方差矩阵，strip_symmetric确保矩阵对称性。
             scaling: torch.Tensor, scaling_modifier: float, rotation: torch.Tensor
         ) -> torch.Tensor:
             L = build_scaling_rotation(scaling_modifier * scaling, rotation)
@@ -54,7 +54,7 @@ class GaussianModel:
 
         self.rotation_activation = torch.nn.functional.normalize
 
-    def __init__(self, sh_degree: int) -> None:
+    def __init__(self, sh_degree: int) -> None:#初始化高斯模型所有参数和状态变量
         self.active_sh_degree = 0
         self.max_sh_degree = sh_degree
         self._xyz = torch.empty(0)
@@ -75,7 +75,7 @@ class GaussianModel:
         self.spatial_lr_scale = 0
         self.setup_functions()
 
-    def capture(
+    def capture(#保存模型当前状态，所有参数，优化器等状态
         self,
     ) -> Tuple[
         int,
@@ -114,7 +114,7 @@ class GaussianModel:
             self.spatial_lr_scale,
         )
 
-    def restore(
+    def restore(#恢复状态，从保存的状态中
         self,
         model_args: Tuple[
             int,
@@ -198,14 +198,14 @@ class GaussianModel:
     def get_metallic(self) -> torch.Tensor:
         return self.material_activation(self._metallic)
 
-    def get_covariance(self, scaling_modifier: float = 1.0) -> torch.Tensor:
+    def get_covariance(self, scaling_modifier: float = 1.0) -> torch.Tensor:#计算gs协方差
         return self.covariance_activation(self.get_scaling, scaling_modifier, self._rotation)
 
-    def oneupSHdegree(self) -> None:
+    def oneupSHdegree(self) -> None:#提升球谐函数阶数
         if self.active_sh_degree < self.max_sh_degree:
             self.active_sh_degree += 1
 
-    def create_from_pcd(self, pcd: BasicPointCloud, spatial_lr_scale: float) -> None:
+    def create_from_pcd(self, pcd: BasicPointCloud, spatial_lr_scale: float) -> None:#从点云（BasicPointCloud）初始化 3D 高斯模型的所有参数，是模型训练的起点
         self.spatial_lr_scale = spatial_lr_scale
         fused_point_cloud = torch.tensor(np.asarray(pcd.points)).float().cuda()
         fused_color = RGB2SH(torch.tensor(np.asarray(pcd.colors)).float().cuda())
@@ -251,7 +251,7 @@ class GaussianModel:
         self._metallic = nn.Parameter(metallic.requires_grad_(True))
         self.max_radii2D = torch.zeros((self.get_xyz.shape[0]), device="cuda")
 
-    def training_setup(self, training_args: GroupParams) -> None:
+    def training_setup(self, training_args: GroupParams) -> None:#定义优化器参数组，不同参数
         self.percent_dense = training_args.percent_dense
         self.xyz_gradient_accum = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
         self.denom = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
@@ -277,7 +277,7 @@ class GaussianModel:
             {"params": [self._rotation], "lr": training_args.rotation_lr, "name": "rotation"},
         ]
 
-        self.optimizer = torch.optim.Adam(l, lr=0.0, eps=1e-15)
+        self.optimizer = torch.optim.Adam(l, lr=0.0, eps=1e-15)#初始化优化器
         self.xyz_scheduler_args = get_expon_lr_func(
             lr_init=training_args.position_lr_init * self.spatial_lr_scale,
             lr_final=training_args.position_lr_final * self.spatial_lr_scale,
@@ -285,7 +285,7 @@ class GaussianModel:
             max_steps=training_args.position_lr_max_steps,
         )
 
-    def update_learning_rate(self, iteration: int) -> float:
+    def update_learning_rate(self, iteration: int) -> float:#更新学习率
         """Learning rate scheduling per step"""
         for param_group in self.optimizer.param_groups:
             if param_group["name"] == "xyz":
@@ -293,7 +293,7 @@ class GaussianModel:
                 param_group["lr"] = lr
                 return lr
 
-    def construct_list_of_attributes(self) -> List[str]:
+    def construct_list_of_attributes(self) -> List[str]:#构建高斯点云属性的名称列表，用于 PLY 文件的保存和加载。
         l = ["x", "y", "z"]
         # All channels except the 3 DC
         for i in range(self._features_dc.shape[1] * self._features_dc.shape[2]):
@@ -313,7 +313,7 @@ class GaussianModel:
             l.append(f"rot_{i}")
         return l
 
-    def save_ply(self, path: str) -> None:
+    def save_ply(self, path: str) -> None:#将当前高斯模型的所有参数保存为 PLY 格式文件，用于模型持久化或可视化
         mkdir_p(os.path.dirname(path))
 
         xyz = self._xyz.detach().cpu().numpy()
@@ -363,14 +363,14 @@ class GaussianModel:
         el = PlyElement.describe(elements, "vertex")
         PlyData([el]).write(path)
 
-    def reset_opacity(self) -> None:
+    def reset_opacity(self) -> None:#重置高斯点的不透明度参数，防止不透明度在训练中变得过小（或过大），保证数值稳定性。
         opacities_new = inverse_sigmoid(
             torch.min(self.get_opacity, torch.ones_like(self.get_opacity) * 0.01)
         )
         optimizable_tensors = self.replace_tensor_to_optimizer(opacities_new, "opacity")
         self._opacity = optimizable_tensors["opacity"]
 
-    def load_ply(self, path: str) -> None:
+    def load_ply(self, path: str) -> None:#从 PLY 文件加载高斯模型参数，恢复模型状态（与save_ply对应）
         plydata = PlyData.read(path)
 
         xyz = np.stack(
@@ -473,7 +473,7 @@ class GaussianModel:
 
         self.active_sh_degree = self.max_sh_degree
 
-    def replace_tensor_to_optimizer(self, tensor: torch.Tensor, name: str) -> Dict:
+    def replace_tensor_to_optimizer(self, tensor: torch.Tensor, name: str) -> Dict:#替换优化器中指定名称的参数张量（如不透明度），同时保留优化器的状态（如动量项）。
         optimizable_tensors = {}
         for group in self.optimizer.param_groups:
             if group["name"] == name:
@@ -488,7 +488,7 @@ class GaussianModel:
                 optimizable_tensors[group["name"]] = group["params"][0]
         return optimizable_tensors
 
-    def _prune_optimizer(self, mask: torch.Tensor) -> Dict:
+    def _prune_optimizer(self, mask: torch.Tensor) -> Dict:#根据掩码（mask）修剪优化器中的参数，保留有效参数（掩码为True的部分）。
         optimizable_tensors = {}
         for group in self.optimizer.param_groups:
             stored_state = self.optimizer.state.get(group["params"][0], None)
@@ -506,7 +506,7 @@ class GaussianModel:
                 optimizable_tensors[group["name"]] = group["params"][0]
         return optimizable_tensors
 
-    def prune_points(self, mask: torch.Tensor) -> None:
+    def prune_points(self, mask: torch.Tensor) -> None:#根据掩码修剪高斯点云，移除无效点（如不透明度极低的点）。
         valid_points_mask = ~mask
         optimizable_tensors = self._prune_optimizer(valid_points_mask)
 
@@ -526,7 +526,7 @@ class GaussianModel:
         self.denom = self.denom[valid_points_mask]
         self.max_radii2D = self.max_radii2D[valid_points_mask]
 
-    def cat_tensors_to_optimizer(self, tensors_dict: Dict) -> Dict:
+    def cat_tensors_to_optimizer(self, tensors_dict: Dict) -> Dict:#将新生成的高斯点参数（张量）拼接到底层优化器的现有参数中，支持动态增加高斯点。
         optimizable_tensors = {}
         for group in self.optimizer.param_groups:
             assert len(group["params"]) == 1
@@ -555,7 +555,7 @@ class GaussianModel:
 
         return optimizable_tensors
 
-    def densification_postfix(
+    def densification_postfix(#致密化（增加高斯点）的后续处理，整合新生成的高斯点到模型中。
         self,
         new_xyz: torch.Tensor,
         new_features_dc: torch.Tensor,
@@ -597,7 +597,7 @@ class GaussianModel:
         self.denom = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
         self.max_radii2D = torch.zeros((self.get_xyz.shape[0]), device="cuda")
 
-    def densify_and_split(
+    def densify_and_split(#根据梯度条件分裂现有高斯点，在需要更高精度的区域增加点数量（致密化策略之一）。
         self,
         grads: torch.Tensor,
         grad_threshold: float,
@@ -651,7 +651,7 @@ class GaussianModel:
         )
         self.prune_points(prune_filter)
 
-    def densify_and_clone(
+    def densify_and_clone(#克隆现有高斯点，在需要增加密度但无需分裂的区域补充点（致密化策略之二）。
         self,
         grads: torch.Tensor,
         grad_threshold: float,
@@ -688,7 +688,7 @@ class GaussianModel:
             new_rotation,
         )
 
-    def densify_and_prune(
+    def densify_and_prune(#整合致密化（克隆 + 分裂）和修剪操作，动态调整高斯点云的数量和分布。
         self,
         max_grad: float,
         min_opacity: float,
@@ -712,7 +712,7 @@ class GaussianModel:
 
         torch.cuda.empty_cache()
 
-    def add_densification_stats(
+    def add_densification_stats(#累积高斯点的梯度统计信息，为后续致密化（densify_and_prune）提供依据。
         self,
         viewspace_point_tensor: torch.Tensor,
         update_filter: torch.Tensor,
