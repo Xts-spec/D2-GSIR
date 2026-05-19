@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # <p align="center"> GS-IR: 3D Gaussian Splatting for Inverse Rendering </p>
 
 #####  <p align="center"> [Zhihao Liang](https://lzhnb.github.io/), [Qi Zhang](https://qzhang-cv.github.io/), [Ying Feng](https://scholar.google.com.hk/citations?user=PhkrqioAAAAJ&hl=zh-CN), [Ying Shan](https://scholar.google.com/citations?user=4oXBp9UAAAAJ&hl=zh-CN), [Kui Jia](http://kuijia.site/)</p>
@@ -242,3 +243,7 @@ If you find this work useful in your research, please cite:
   year={2023}
 }
 ```
+=======
+# D2-GSIR
+Dual-Gradient and Depth-Regularized Gaussian Splatting for Relightable 3D Scene Reconstruction
+>>>>>>> 582549ffa1454b14a1b3b787e004a0063e0d045f
