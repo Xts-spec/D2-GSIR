@@ -5,18 +5,6 @@
 
 #### <p align="center">[Project Page](https://lzhnb.github.io/project-pages/gs-ir.html) | [ArXiv](https://arxiv.org/abs/2311.16473) | [Paper](https://arxiv.org/abs/2311.16473)</p>
 
-## Introduction
-We present GS-IR that models a scene as a set of 3D Gaussians to achieve physically-based rendering and state-ofthe-art decomposition results for both objects and scenes.
-
-<p align="center">
-  <img width="60%" src="assets/teaser.png"/>
-  <img width="60%" src="assets/bicycle.gif"/>
-  <img width="60%" src="assets/ficus.gif"/>
-</p>
-
-> Welcome to our new work [Analytic-Splatting](https://github.com/lzhnb/Analytic-Splatting). We achieve anti-aliasing and excellent detail fidelity through analytical integral approximation.
-> **Analytic-Splatting** was accepted by **ECCV 2024**!
-
 ## Installation
 create the basic environment
 ```sh
